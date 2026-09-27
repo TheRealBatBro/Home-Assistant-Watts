@@ -1,0 +1,53 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Watts",
+        "description": "Create a Client ID and Client Secret at [developer.watts-energy.dk]({keys_url}) (log in with your Watts account, open **Keys**, click **Generate** and then **Create Secret**).",
+        "data": {
+          "client_id": "Client ID",
+          "client_secret": "Client Secret"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Renew Watts client secret",
+        "description": "The client secret was rejected - it may have expired. Create a new secret at [developer.watts-energy.dk]({keys_url}) and paste it here.",
+        "data": {
+          "client_secret": "Client Secret"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid Client ID or Client Secret.",
+      "cannot_connect": "Could not connect to the Watts API.",
+      "no_locations": "The credentials work, but no locations were found on this Watts account.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This Watts client is already configured.",
+      "reauth_successful": "Client secret updated."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "price": {
+        "name": "Electricity price"
+      },
+      "power": {
+        "name": "Power"
+      },
+      "energy_today_live": {
+        "name": "Energy today (live)"
+      },
+      "energy_yesterday": {
+        "name": "Energy yesterday"
+      },
+      "energy_this_month": {
+        "name": "Energy this month"
+      },
+      "energy_latest_hour": {
+        "name": "Latest hourly reading"
+      }
+    }
+  }
+}

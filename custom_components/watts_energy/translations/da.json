@@ -1,0 +1,53 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Forbind til Watts",
+        "description": "Opret et Client ID og en Client Secret på [developer.watts-energy.dk]({keys_url}) (log ind med din Watts-konto, åbn **Keys**, klik **Generate** og derefter **Create Secret**).",
+        "data": {
+          "client_id": "Client ID",
+          "client_secret": "Client Secret"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Forny Watts client secret",
+        "description": "Din client secret blev afvist - den er måske udløbet. Opret en ny på [developer.watts-energy.dk]({keys_url}) og indsæt den her.",
+        "data": {
+          "client_secret": "Client Secret"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Ugyldigt Client ID eller Client Secret.",
+      "cannot_connect": "Kunne ikke forbinde til Watts API.",
+      "no_locations": "Loginoplysningerne virker, men der blev ikke fundet nogen adresser på Watts-kontoen.",
+      "unknown": "Uventet fejl."
+    },
+    "abort": {
+      "already_configured": "Denne Watts-klient er allerede konfigureret.",
+      "reauth_successful": "Client secret opdateret."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "price": {
+        "name": "Elpris"
+      },
+      "power": {
+        "name": "Effekt"
+      },
+      "energy_today_live": {
+        "name": "Forbrug i dag (live)"
+      },
+      "energy_yesterday": {
+        "name": "Forbrug i går"
+      },
+      "energy_this_month": {
+        "name": "Forbrug denne måned"
+      },
+      "energy_latest_hour": {
+        "name": "Seneste timeaflæsning"
+      }
+    }
+  }
+}

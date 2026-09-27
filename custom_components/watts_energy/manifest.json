@@ -1,0 +1,13 @@
+{
+  "domain": "watts_energy",
+  "name": "Watts Energy",
+  "codeowners": ["@TheRealBatBro"],
+  "config_flow": true,
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/TheRealBatBro/Home-Assistant-Watts",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/TheRealBatBro/Home-Assistant-Watts/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
