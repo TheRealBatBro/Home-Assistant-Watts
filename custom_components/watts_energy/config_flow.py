@@ -6,10 +6,11 @@ from collections.abc import Mapping
 import logging
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .api import WattsApiClient, WattsAuthError, WattsConnectionError
 from .const import CONF_CLIENT_ID, CONF_CLIENT_SECRET, DOMAIN
@@ -32,8 +33,11 @@ class WattsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_validate(self, user_input: dict[str, Any]) -> tuple[dict[str, str], int]:
         """Return (errors, location count)."""
+        session = async_create_clientsession(
+            self.hass, auto_cleanup=False, cookie_jar=aiohttp.DummyCookieJar()
+        )
         client = WattsApiClient(
-            async_get_clientsession(self.hass),
+            session,
             user_input[CONF_CLIENT_ID].strip(),
             user_input[CONF_CLIENT_SECRET].strip(),
         )
@@ -46,6 +50,8 @@ class WattsConfigFlow(ConfigFlow, domain=DOMAIN):
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Unexpected error validating Watts credentials")
             return {"base": "unknown"}, 0
+        finally:
+            session.detach()
         if not locations:
             return {"base": "no_locations"}, 0
         return {}, len(locations)

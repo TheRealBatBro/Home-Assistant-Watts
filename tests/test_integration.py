@@ -57,18 +57,19 @@ async def test_sensors_and_statistics(hass, mock_api):
     assert len(price.attributes["today"]) >= 23
     assert price.attributes["tomorrow_available"] is True
 
-    yesterday = next(s for e, s in states.items() if "yesterday" in e)
-    assert yesterday.state not in ("unavailable",)
+    last_day = next(s for e, s in states.items() if "last_full_day" in e)
+    assert float(last_day.state) == 24.0  # 1 kWh every hour of a complete day
+    assert last_day.attributes["date"] < dt_util.now().date().isoformat()
 
     await async_wait_recording_done(hass)
     stat_id = "watts_energy:571313100000000001_consumption"
     stats = await get_instance(hass).async_add_executor_job(
-        statistics_during_period, hass, dt_util.utcnow() - timedelta(days=100), None,
+        statistics_during_period, hass, dt_util.utcnow() - timedelta(days=400), None,
         {stat_id}, "hour", None, {"sum", "state"},
     )
     rows = stats[stat_id]
     print("statistics rows:", len(rows), "last sum:", rows[-1]["sum"])
-    assert len(rows) > 24 * 80
+    assert len(rows) > 24 * 360
     assert rows[-1]["sum"] == len(rows)
 
     # Second import must only append, not duplicate.
@@ -78,7 +79,7 @@ async def test_sensors_and_statistics(hass, mock_api):
     await hass.async_block_till_done()
     await async_wait_recording_done(hass)
     stats2 = await get_instance(hass).async_add_executor_job(
-        statistics_during_period, hass, dt_util.utcnow() - timedelta(days=100), None,
+        statistics_during_period, hass, dt_util.utcnow() - timedelta(days=400), None,
         {stat_id}, "hour", None, {"sum"},
     )
     assert stats2[stat_id][-1]["sum"] == rows[-1]["sum"]

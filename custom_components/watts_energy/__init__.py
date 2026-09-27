@@ -5,7 +5,9 @@ from __future__ import annotations
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+import aiohttp
+
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .api import WattsApiClient
 from .const import CONF_CLIENT_ID, CONF_CLIENT_SECRET, DOMAIN
@@ -16,8 +18,10 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, entry: WattsConfigEntry) -> bool:
     """Set up Watts from a config entry."""
+    # Own session without cookies: B2C session cookies from an earlier token call can
+    # make the token endpoint answer with its interactive sign-in page.
     client = WattsApiClient(
-        async_get_clientsession(hass),
+        async_create_clientsession(hass, cookie_jar=aiohttp.DummyCookieJar()),
         entry.data[CONF_CLIENT_ID],
         entry.data[CONF_CLIENT_SECRET],
     )

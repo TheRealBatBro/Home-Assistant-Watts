@@ -39,14 +39,14 @@
       "energy_today_live": {
         "name": "Forbrug i dag (live)"
       },
-      "energy_yesterday": {
-        "name": "Forbrug i går"
-      },
       "energy_this_month": {
         "name": "Forbrug denne måned"
       },
       "energy_latest_hour": {
         "name": "Seneste timeaflæsning"
+      },
+      "energy_last_day": {
+        "name": "Forbrug seneste hele døgn"
       }
     }
   }

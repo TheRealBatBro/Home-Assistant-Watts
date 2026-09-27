@@ -83,9 +83,27 @@ def _live_today(dev: DeviceData) -> float:
     return round(sum(v for t, v, _ in dev.live if t >= today), 3)
 
 
-def _yesterday(dev: DeviceData) -> float | None:
+def _last_full_day(dev: DeviceData) -> tuple[str, float] | None:
+    """Most recent local day with complete hourly data (23-25 hours around DST)."""
+    days: dict[datetime, list[float]] = {}
+    for t, v in dev.hourly:
+        days.setdefault(dt_util.start_of_local_day(dt_util.as_local(t)), []).append(v)
     today = dt_util.start_of_local_day()
-    return _sum_between(dev.hourly, today - timedelta(days=1), today)
+    for day in sorted(days, reverse=True):
+        hours_in_day = round((dt_util.start_of_local_day(day + timedelta(hours=25)) - day).total_seconds() / 3600)
+        if day < today and len(days[day]) >= hours_in_day:
+            return day.date().isoformat(), round(sum(days[day]), 3)
+    return None
+
+
+def _last_day_value(dev: DeviceData) -> float | None:
+    result = _last_full_day(dev)
+    return result[1] if result else None
+
+
+def _last_day_attrs(dev: DeviceData) -> dict[str, Any]:
+    result = _last_full_day(dev)
+    return {"date": result[0]} if result else {}
 
 
 def _this_month(dev: DeviceData) -> float | None:
@@ -133,12 +151,13 @@ METER_SENSORS: tuple[WattsMeterSensorDescription, ...] = (
         live_only=True,
     ),
     WattsMeterSensorDescription(
-        key="energy_yesterday",
-        translation_key="energy_yesterday",
+        key="energy_last_day",
+        translation_key="energy_last_day",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
-        value_fn=_yesterday,
+        value_fn=_last_day_value,
+        attrs_fn=_last_day_attrs,
     ),
     WattsMeterSensorDescription(
         key="energy_this_month",
@@ -276,11 +295,11 @@ class WattsMeterSensor(CoordinatorEntity[WattsCoordinator], SensorEntity):
         self._device_id = device_id
         self._attr_unique_id = f"{device_id}_{description.key}"
         dev = coordinator.data.devices[device_id]
-        location = coordinator.data.locations.get(dev.location_id, {})
         kind = "Production meter" if dev.is_production else "Electricity meter"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device_id)},
-            name=f"{kind} {_location_name(location)}",
+            # Several meters can share an address; the address is on the location device.
+            name=f"{kind} {device_id[-4:]}",
             manufacturer="Watts",
             model=f"{kind}{' with Watts Live' if dev.has_live_card else ''}",
             serial_number=device_id,

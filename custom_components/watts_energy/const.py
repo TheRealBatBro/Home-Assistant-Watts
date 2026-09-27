@@ -22,11 +22,11 @@ CONF_CLIENT_SECRET = "client_secret"
 
 # Live data (5-minute resolution) is polled on every update.
 UPDATE_INTERVAL = timedelta(minutes=5)
-# Hourly consumption and prices change far less often.
+# Locations and hourly consumption change far less often (hourly data lags 2-3 days).
 SLOW_UPDATE_INTERVAL = timedelta(hours=1)
 
 # How far back to import hourly consumption into long-term statistics on first run.
-STATISTICS_BACKFILL_DAYS = 90
+STATISTICS_BACKFILL_DAYS = 365
 
 DEVICE_TYPE_ELECTRICITY = 4
 

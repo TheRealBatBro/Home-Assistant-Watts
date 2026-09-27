@@ -20,11 +20,18 @@ from .const import (
     SLOW_UPDATE_INTERVAL,
     UPDATE_INTERVAL,
 )
-from .statistics import async_import_consumption_statistics
+from .statistics import async_get_import_state, async_import_hourly
 
 _LOGGER = logging.getLogger(__name__)
 
 type WattsConfigEntry = ConfigEntry[WattsCoordinator]
+
+# Hourly meter data typically lags 2-3 days, so keep a week for the "last full day" sensor.
+HOURLY_SENSOR_DAYS = 7
+# Refresh prices at least this often even when nothing new is expected.
+PRICE_MAX_AGE = timedelta(hours=6)
+# Next-day prices are published around 13:00 Danish time.
+TOMORROW_PRICES_HOUR = 13
 
 
 def parse_time(value: str | None) -> datetime | None:
@@ -37,6 +44,18 @@ def parse_time(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def parse_series(records: list[dict[str, Any]], key: str) -> list[tuple[datetime, float]]:
+    """Turn API records into a time-sorted list of (start, value)."""
+    return sorted(
+        (
+            (t, float(r[key]))
+            for r in records
+            if (t := parse_time(r.get("t"))) and r.get(key) is not None
+        ),
+        key=lambda x: x[0],
+    )
 
 
 @dataclass
@@ -79,7 +98,12 @@ def _is_active(device: dict[str, Any], now: datetime) -> bool:
 
 
 class WattsCoordinator(DataUpdateCoordinator[WattsData]):
-    """Polls the Watts API."""
+    """Polls the Watts API.
+
+    The API allows 10 requests a minute, so only live data is polled every
+    update; locations and hourly consumption refresh hourly, prices only when
+    new ones can be expected.
+    """
 
     config_entry: WattsConfigEntry
 
@@ -95,6 +119,7 @@ class WattsCoordinator(DataUpdateCoordinator[WattsData]):
         )
         self.client = client
         self._last_slow_update: datetime | None = None
+        self._last_price_update: datetime | None = None
 
     async def _async_update_data(self) -> WattsData:
         try:
@@ -113,6 +138,43 @@ class WattsCoordinator(DataUpdateCoordinator[WattsData]):
             or now - self._last_slow_update >= SLOW_UPDATE_INTERVAL
         )
 
+        if slow_due:
+            data = await self._async_fetch_locations(now)
+        else:
+            assert previous is not None
+            data = WattsData(
+                locations=previous.locations,
+                devices={
+                    device_id: DeviceData(dev.info, dev.location_id, hourly=dev.hourly)
+                    for device_id, dev in previous.devices.items()
+                },
+                prices=previous.prices,
+            )
+
+        for dev in data.devices.values():
+            if dev.has_live_card:
+                records = await self.client.async_get_live_data(
+                    dev.device_id, now - timedelta(hours=24), now
+                )
+                dev.live = sorted(
+                    (
+                        (t, float(r["v"]), r)
+                        for r in records
+                        if (t := parse_time(r.get("t"))) and r.get("v") is not None
+                    ),
+                    key=lambda x: x[0],
+                )
+
+        if slow_due:
+            await self._async_fetch_hourly(data, now)
+            data.prices = previous.prices if previous else {}
+            if self._prices_due(data, now):
+                await self._async_fetch_prices(data, now)
+            self._last_slow_update = now
+
+        return data
+
+    async def _async_fetch_locations(self, now: datetime) -> WattsData:
         data = WattsData()
         for location in await self.client.async_get_locations():
             location_id = location.get("id")
@@ -126,67 +188,45 @@ class WattsCoordinator(DataUpdateCoordinator[WattsData]):
                     and _is_active(device, now)
                 ):
                     data.devices[device["id"]] = DeviceData(device, location_id)
-
-        # Live data: every update.
-        for dev in data.devices.values():
-            if not dev.has_live_card:
-                continue
-            records = await self.client.async_get_live_data(
-                dev.device_id, now - timedelta(hours=24), now
-            )
-            dev.live = sorted(
-                (
-                    (t, float(r["v"]), r)
-                    for r in records
-                    if (t := parse_time(r.get("t"))) and r.get("v") is not None
-                ),
-                key=lambda x: x[0],
-            )
-
-        if slow_due:
-            await self._async_fetch_slow(data, now)
-            self._last_slow_update = now
-        else:
-            for device_id, dev in data.devices.items():
-                if previous and device_id in previous.devices:
-                    dev.hourly = previous.devices[device_id].hourly
-            data.prices = previous.prices if previous else {}
-
         return data
 
-    async def _async_fetch_slow(self, data: WattsData, now: datetime) -> None:
+    async def _async_fetch_hourly(self, data: WattsData, now: datetime) -> None:
+        """One request per meter feeds both the sensors and long-term statistics."""
         local_now = dt_util.as_local(now)
-        month_start = dt_util.start_of_local_day(local_now.replace(day=1))
-        # Include the tail of the previous month so "yesterday" works on the 1st.
-        hourly_start = min(month_start, dt_util.start_of_local_day(local_now) - timedelta(days=1))
-
+        sensor_start = min(
+            dt_util.start_of_local_day(local_now.replace(day=1)),
+            dt_util.start_of_local_day(local_now) - timedelta(days=HOURLY_SENSOR_DAYS),
+        )
         for dev in data.devices.values():
-            records = await self.client.async_get_consumptions(dev.device_id, hourly_start, now)
-            dev.hourly = sorted(
-                (
-                    (t, float(r["v"]))
-                    for r in records
-                    if (t := parse_time(r.get("t"))) and r.get("v") is not None
-                ),
-                key=lambda x: x[0],
-            )
+            import_state = await async_get_import_state(self.hass, dev)
+            fetch_from = min(sensor_start, import_state.fetch_from)
+            records = await self.client.async_get_consumptions(dev.device_id, fetch_from, now)
+            series = parse_series(records, "v")
+            dev.hourly = [(t, v) for t, v in series if t >= sensor_start]
             try:
-                await async_import_consumption_statistics(self.hass, self.client, dev)
-            except WattsAuthError:
-                raise
+                async_import_hourly(self.hass, dev, series, import_state)
             except Exception:  # noqa: BLE001 - statistics must never break the sensors
                 _LOGGER.exception("Failed to import statistics for %s", dev.device_id)
 
-        day_start = dt_util.start_of_local_day(local_now)
+    def _prices_due(self, data: WattsData, now: datetime) -> bool:
+        if self._last_price_update is None or now - self._last_price_update >= PRICE_MAX_AGE:
+            return True
+        local_now = dt_util.as_local(now)
+        today = dt_util.start_of_local_day(local_now)
+        tomorrow = today + timedelta(days=1)
+        for location_id in data.locations:
+            prices = data.prices.get(location_id, [])
+            if not any(today <= t < tomorrow for t, _ in prices):
+                return True
+            if local_now.hour >= TOMORROW_PRICES_HOUR and not any(t >= tomorrow for t, _ in prices):
+                return True
+        return False
+
+    async def _async_fetch_prices(self, data: WattsData, now: datetime) -> None:
+        day_start = dt_util.start_of_local_day(dt_util.as_local(now))
         for location_id in data.locations:
             records = await self.client.async_get_prices(
                 location_id, day_start, day_start + timedelta(days=2)
             )
-            data.prices[location_id] = sorted(
-                (
-                    (t, float(r["p"]))
-                    for r in records
-                    if (t := parse_time(r.get("t"))) and r.get("p") is not None
-                ),
-                key=lambda x: x[0],
-            )
+            data.prices[location_id] = parse_series(records, "p")
+        self._last_price_update = now

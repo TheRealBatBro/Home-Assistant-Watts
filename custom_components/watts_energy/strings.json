@@ -39,14 +39,14 @@
       "energy_today_live": {
         "name": "Energy today (live)"
       },
-      "energy_yesterday": {
-        "name": "Energy yesterday"
-      },
       "energy_this_month": {
         "name": "Energy this month"
       },
       "energy_latest_hour": {
         "name": "Latest hourly reading"
+      },
+      "energy_last_day": {
+        "name": "Energy last full day"
       }
     }
   }
