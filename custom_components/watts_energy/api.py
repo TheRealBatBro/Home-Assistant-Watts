@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import json
 import logging
 import time
 from typing import Any
@@ -17,6 +18,8 @@ _LOGGER = logging.getLogger(__name__)
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 # Refresh the token this many seconds before it actually expires.
 TOKEN_EXPIRY_MARGIN = 120
+TOKEN_ATTEMPTS = 4
+TOKEN_RETRY_DELAY = 2
 
 
 class WattsError(Exception):
@@ -29,6 +32,19 @@ class WattsAuthError(WattsError):
 
 class WattsConnectionError(WattsError):
     """The API could not be reached or returned an unexpected response."""
+
+
+def _parse_json(text: str) -> Any:
+    """Return parsed JSON, or None if the text isn't a JSON document."""
+    try:
+        return json.loads(text) if text.strip() else None
+    except ValueError:
+        return None
+
+
+def _snippet(text: str, limit: int = 200) -> str:
+    text = " ".join(text.split())
+    return (text[:limit] + "...") if len(text) > limit else (text or "<empty body>")
 
 
 def _iso(value: datetime) -> str:
@@ -49,39 +65,67 @@ class WattsApiClient:
         self._token_expires = 0.0
         self._token_lock = asyncio.Lock()
 
+    async def _async_request_token(self, use_query: bool) -> tuple[int, str]:
+        """POST to the token endpoint and return (status, body text).
+
+        Credentials go in a form body by default. Watts' own example sends them as
+        query parameters with an empty body, so that is kept as a fallback.
+        """
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+            "scope": TOKEN_SCOPE,
+        }
+        kwargs: dict[str, Any] = (
+            {"params": data, "data": b""} if use_query else {"data": data}
+        )
+        async with self._session.post(
+            TOKEN_URL,
+            headers={"Accept": "application/json"},
+            timeout=REQUEST_TIMEOUT,
+            **kwargs,
+        ) as resp:
+            return resp.status, await resp.text()
+
     async def _async_get_token(self) -> str:
         async with self._token_lock:
             if self._token and time.monotonic() < self._token_expires:
                 return self._token
 
-            data = {
-                "grant_type": "client_credentials",
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "scope": TOKEN_SCOPE,
-            }
-            try:
-                async with self._session.post(
-                    TOKEN_URL, data=data, timeout=REQUEST_TIMEOUT
-                ) as resp:
-                    body = await resp.json(content_type=None)
-                    if resp.status in (400, 401, 403):
-                        raise WattsAuthError(
-                            body.get("error_description") or body.get("error") or resp.status
-                        )
-                    resp.raise_for_status()
-            except WattsAuthError:
-                raise
-            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
-                raise WattsConnectionError(f"Token request failed: {err}") from err
+            last_error = "no response"
+            for attempt in range(TOKEN_ATTEMPTS):
+                if attempt:
+                    await asyncio.sleep(TOKEN_RETRY_DELAY * attempt)
+                try:
+                    status, text = await self._async_request_token(use_query=attempt % 2 == 1)
+                except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                    last_error = f"{type(err).__name__}: {err}"
+                    continue
 
-            token = body.get("access_token")
-            if not token:
-                raise WattsAuthError("No access_token in token response")
-            expires_in = int(body.get("expires_in", 3600))
-            self._token = token
-            self._token_expires = time.monotonic() + max(expires_in - TOKEN_EXPIRY_MARGIN, 60)
-            return token
+                body = _parse_json(text)
+                if body is None:
+                    # Throttling and gateway errors come back as HTML or an empty body.
+                    last_error = f"HTTP {status}, non-JSON response: {_snippet(text)}"
+                    _LOGGER.debug("Token endpoint returned non-JSON (HTTP %s): %s", status, text)
+                    continue
+                if status in (400, 401, 403):
+                    raise WattsAuthError(
+                        body.get("error_description") or body.get("error") or f"HTTP {status}"
+                    )
+                if status >= 300:
+                    last_error = f"HTTP {status}: {_snippet(text)}"
+                    continue
+
+                token = body.get("access_token")
+                if not token:
+                    raise WattsAuthError("No access_token in token response")
+                expires_in = int(body.get("expires_in", 3600))
+                self._token = token
+                self._token_expires = time.monotonic() + max(expires_in - TOKEN_EXPIRY_MARGIN, 60)
+                return token
+
+            raise WattsConnectionError(f"Token request failed: {last_error}")
 
     async def _async_get(self, path: str, params: dict[str, str] | None = None) -> Any:
         query = {"v": API_VERSION, **(params or {})}
@@ -103,11 +147,22 @@ class WattsApiClient:
                         continue
                     if resp.status in (401, 403):
                         raise WattsAuthError(f"Access denied ({resp.status})")
-                    resp.raise_for_status()
-                    return await resp.json(content_type=None)
-            except WattsAuthError:
+                    text = await resp.text()
+                    if resp.status >= 300:
+                        raise WattsConnectionError(
+                            f"GET {path} failed: HTTP {resp.status}: {_snippet(text)}"
+                        )
+                    if not text.strip():
+                        return None
+                    body = _parse_json(text)
+                    if body is None:
+                        raise WattsConnectionError(
+                            f"GET {path} returned non-JSON (HTTP {resp.status}): {_snippet(text)}"
+                        )
+                    return body
+            except (WattsAuthError, WattsConnectionError):
                 raise
-            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                 raise WattsConnectionError(f"GET {path} failed: {err}") from err
         raise WattsAuthError("Access denied")
 
